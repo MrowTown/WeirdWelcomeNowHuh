@@ -1,0 +1,76 @@
+name: Vara Pool 62 Snapshot
+on:
+  push:
+    paths:
+      - '.github/workflows/vara-pool62.yml'
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Query Vara pool 62
+        run: |
+          mkdir /tmp/vara-pool62
+          cd /tmp/vara-pool62
+          npm init -y >/dev/null 2>&1
+          npm install @polkadot/api >/dev/null 2>&1
+          cat > snapshot.mjs <<'JS'
+          import { ApiPromise, WsProvider } from '@polkadot/api';
+
+          const endpoints = [
+            'wss://rpc.vara.network',
+            'wss://archive-rpc.vara.network',
+            'wss://vara.api.onfinality.io/public-ws'
+          ];
+
+          let api;
+          let lastErr;
+          for (const endpoint of endpoints) {
+            try {
+              const provider = new WsProvider(endpoint, 5000);
+              api = await ApiPromise.create({ provider, noInitWarn: true });
+              await api.isReadyOrError;
+              console.log('ENDPOINT=' + endpoint);
+              break;
+            } catch (e) {
+              lastErr = e;
+              console.error('FAILED_ENDPOINT=' + endpoint + ' ' + String(e));
+            }
+          }
+          if (!api) throw lastErr || new Error('No Vara endpoint connected');
+
+          const header = await api.rpc.chain.getHeader();
+          const hash = await api.rpc.chain.getBlockHash(header.number);
+          const now = new Date().toISOString();
+
+          const entries = await api.query.nominationPools.poolMembers.entries();
+          const rows = [];
+          for (const [key, val] of entries) {
+            const human = val.toHuman();
+            if (!human) continue;
+            if (String(human.poolId) !== '62') continue;
+            const who = key.args[0].toString();
+            const raw = val.unwrap ? val.unwrap() : val;
+            const points = BigInt(raw.points.toString());
+            rows.push({ who, points });
+          }
+          rows.sort((a,b) => a.points === b.points ? 0 : (a.points > b.points ? -1 : 1));
+
+          console.log('SNAPSHOT_UTC=' + now);
+          console.log('BLOCK_NUMBER=' + header.number.toString());
+          console.log('BLOCK_HASH=' + hash.toHex());
+          console.log('POOL_ID=62');
+          console.log('MEMBER_COUNT=' + rows.length);
+          console.log('TOP10_BEGIN');
+          rows.slice(0,10).forEach((r,i) => {
+            const whole = r.points / 1000000000000n;
+            const frac = (r.points % 1000000000000n).toString().padStart(12,'0').slice(0,3);
+            console.log((i+1) + '\t' + r.who + '\t' + whole.toString() + '.' + frac);
+          });
+          console.log('TOP10_END');
+          await api.disconnect();
+          JS
+          node snapshot.mjs
